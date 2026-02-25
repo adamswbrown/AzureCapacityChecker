@@ -1,0 +1,44 @@
+{
+  "machines": [
+    {
+      "MachineName": "APP-SQL-01",
+      "Region": "uksouth",
+      "RecommendedSKU": "Standard_D4s_v5",
+      "vCPU": 4,
+      "MemoryGB": 16,
+      "VMFamily": "Dsv5"
+    },
+    {
+      "MachineName": "WEB-01",
+      "Region": "uksouth",
+      "RecommendedSKU": "Standard_B2ms",
+      "vCPU": 2,
+      "MemoryGB": 8,
+      "VMFamily": "B"
+    },
+    {
+      "MachineName": "DB-PRIMARY",
+      "Region": "uksouth",
+      "RecommendedSKU": "Standard_E8s_v5",
+      "vCPU": 8,
+      "MemoryGB": 64,
+      "VMFamily": "Esv5"
+    },
+    {
+      "MachineName": "BATCH-01",
+      "Region": "westeurope",
+      "RecommendedSKU": "Standard_F8s_v2",
+      "vCPU": 8,
+      "MemoryGB": 16,
+      "VMFamily": "Fsv2"
+    },
+    {
+      "MachineName": "GPU-ML-01",
+      "Region": "uksouth",
+      "RecommendedSKU": "Standard_NC6s_v3",
+      "vCPU": 6,
+      "MemoryGB": 112,
+      "VMFamily": "NCsv3"
+    }
+  ]
+}
