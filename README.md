@@ -11,7 +11,7 @@ Built for cloud migration teams working with large rightsizing exports (1000+ se
 3. **Live capacity check** _(optional)_ — submits ARM deployment validation requests to test whether physical hardware is actually available right now (no VMs are created)
 4. **Alternative recommendations** — when a SKU is blocked or exhausted, scores and ranks alternatives by family similarity, vCPU/memory match, generation, and disk support
 5. **Pricing comparison** — fetches PAYG, 1-year RI, and 3-year RI pricing from the Azure Retail Prices API for both current and alternative SKUs
-6. **Export** — download an updated rightsizing export (same Excel format as the input) with blocked SKUs swapped for verified alternatives
+6. **Export** — download an updated output with blocked SKUs swapped for verified alternatives (mirrored rightsizing Excel format for Excel inputs, flat `.xlsx` for CSV/JSON inputs)
 
 ## Quick Start
 
@@ -49,6 +49,8 @@ The live capacity check also requires **Contributor** access to a resource group
 
 ## Input Formats
 
+Supported upload file types: `.xlsx`, `.xls`, `.csv`, `.json`.
+
 ### Excel (Azure Migrate / Dr Migrate export)
 
 The standard format. Expects a **Servers** sheet with headers on row 6 and columns including:
@@ -66,9 +68,28 @@ The standard format. Expects a **Servers** sheet with headers on row 6 and colum
 
 A **Disks** sheet (also headers on row 6) is parsed if present.
 
-### CSV / JSON
+### CSV / JSON (alternate flat format)
 
-Simpler format with columns: `MachineName`, `Region`, `RecommendedSKU`, `vCPU`, `MemoryGB`, `VMFamily`. See `data/example_dataset.csv`.
+Use this when you're not uploading a full Azure Migrate / Dr Migrate rightsizing export.
+
+Required columns:
+
+- `MachineName`
+- `Region`
+- `RecommendedSKU`
+
+Optional columns:
+
+- `vCPU`
+- `MemoryGB`
+- `VMFamily`
+
+The parser also accepts common header variants (for example `machine_name`, `server`, `location`, `vm_size`).
+
+See:
+
+- `data/example_dataset.csv`
+- `data/example_dataset.json`
 
 ## How the Analysis Works
 
@@ -133,6 +154,9 @@ Two download options:
 
 - **Updated rightsizing export (.xlsx)** — same format as the input file with the "Chosen SKU" column updated to the best alternative where needed, plus advisory columns (Original SKU, Capacity Status, Verdict, Reason)
 - **Full analysis CSV** — flat export with all analysis data including pricing
+
+If the input file is CSV/JSON (or mirrored Excel reconstruction fails), the `.xlsx` download is a flat sheet with:
+`Server`, `Target Azure Region`, `Chosen SKU`, `Original SKU`, `Capacity Status`, `Verdict`, and `Reason`.
 
 ## Project Structure
 
