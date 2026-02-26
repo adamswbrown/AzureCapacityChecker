@@ -20,7 +20,7 @@ from tenacity import (
     before_sleep_log,
 )
 
-from azure_client.auth import AuthMethod, get_access_token
+from azure_client.auth import AuthMethod, DeviceCodePromptCallback, get_access_token
 from app.config import (
     AZURE_COMPUTE_SKU_API_VERSION,
     AZURE_MAX_RETRIES,
@@ -286,6 +286,7 @@ class SkuService:
         tenant_id: str = "",
         client_id: str = "",
         client_secret: str = "",
+        device_code_callback: Optional[DeviceCodePromptCallback] = None,
     ) -> None:
         """Initialize the SKU service.
 
@@ -296,6 +297,7 @@ class SkuService:
             tenant_id: For Service Principal / Device Code.
             client_id: For Service Principal.
             client_secret: For Service Principal.
+            device_code_callback: Optional callback for device code prompts.
         """
         if not subscription_id:
             raise SkuServiceError(
@@ -307,6 +309,7 @@ class SkuService:
         self._tenant_id = tenant_id
         self._client_id = client_id
         self._client_secret = client_secret
+        self._device_code_callback = device_code_callback
         self._cache = SkuCache(ttl=cache_ttl)
         self._disk_cache = SkuCache(ttl=cache_ttl)
         self._base_url = (
@@ -365,6 +368,7 @@ class SkuService:
             tenant_id=self._tenant_id,
             client_id=self._client_id,
             client_secret=self._client_secret,
+            device_code_callback=self._device_code_callback,
         )
         url = f"{self._base_url}?api-version={AZURE_COMPUTE_SKU_API_VERSION}&$filter=resourceType eq 'virtualMachines'"
 
@@ -442,6 +446,7 @@ class SkuService:
             tenant_id=self._tenant_id,
             client_id=self._client_id,
             client_secret=self._client_secret,
+            device_code_callback=self._device_code_callback,
         )
         url = (
             f"{self._base_url}?api-version={AZURE_COMPUTE_SKU_API_VERSION}"

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 from enum import Enum
-from typing import Optional, Union
+from typing import Callable, Optional, Union
 
 from azure.identity import (
     ClientSecretCredential,
@@ -46,6 +46,7 @@ CredentialType = Union[
     DeviceCodeCredential,
     InteractiveBrowserCredential,
 ]
+DeviceCodePromptCallback = Callable[[str, str, int], None]
 
 _credential: Optional[CredentialType] = None
 _current_method: Optional[AuthMethod] = None
@@ -64,7 +65,7 @@ def get_credential(
     tenant_id: str = "",
     client_id: str = "",
     client_secret: str = "",
-    device_code_callback: Optional[object] = None,
+    device_code_callback: Optional[DeviceCodePromptCallback] = None,
 ) -> CredentialType:
     """Create or return a cached credential for the given auth method.
 
@@ -135,6 +136,7 @@ def get_access_token(
     client_id: str = "",
     client_secret: str = "",
     scope: str = "https://management.azure.com/.default",
+    device_code_callback: Optional[DeviceCodePromptCallback] = None,
 ) -> str:
     """Obtain a bearer token for the Azure Resource Manager API.
 
@@ -144,6 +146,7 @@ def get_access_token(
         client_id: For Service Principal.
         client_secret: For Service Principal.
         scope: The OAuth scope to request.
+        device_code_callback: Optional callback for device code flow prompts.
 
     Returns:
         A bearer access token string.
@@ -156,6 +159,7 @@ def get_access_token(
         tenant_id=tenant_id,
         client_id=client_id,
         client_secret=client_secret,
+        device_code_callback=device_code_callback,
     )
     try:
         token = credential.get_token(scope)
@@ -171,6 +175,7 @@ def test_connection(
     tenant_id: str = "",
     client_id: str = "",
     client_secret: str = "",
+    device_code_callback: Optional[DeviceCodePromptCallback] = None,
 ) -> bool:
     """Test that authentication works by requesting a token.
 
@@ -180,6 +185,7 @@ def test_connection(
         tenant_id: For Service Principal / Device Code.
         client_id: For Service Principal.
         client_secret: For Service Principal.
+        device_code_callback: Optional callback for device code flow prompts.
 
     Returns:
         True if a token was successfully obtained.
@@ -195,5 +201,6 @@ def test_connection(
         tenant_id=tenant_id,
         client_id=client_id,
         client_secret=client_secret,
+        device_code_callback=device_code_callback,
     )
     return True

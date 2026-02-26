@@ -26,7 +26,7 @@ from tenacity import (
     before_sleep_log,
 )
 
-from azure_client.auth import AuthMethod, get_access_token
+from azure_client.auth import AuthMethod, DeviceCodePromptCallback, get_access_token
 from app.config import (
     ARM_DEPLOYMENT_API_VERSION,
     ARM_VALIDATION_MAX_WORKERS,
@@ -91,6 +91,7 @@ class DeploymentValidator:
         tenant_id: str = "",
         client_id: str = "",
         client_secret: str = "",
+        device_code_callback: Optional[DeviceCodePromptCallback] = None,
         max_workers: int = ARM_VALIDATION_MAX_WORKERS,
     ) -> None:
         if not subscription_id:
@@ -104,6 +105,7 @@ class DeploymentValidator:
         self._tenant_id = tenant_id
         self._client_id = client_id
         self._client_secret = client_secret
+        self._device_code_callback = device_code_callback
         self._max_workers = max_workers
         self._rate_limiter = _RateLimiter(ARM_VALIDATION_RATE_LIMIT_PER_MINUTE)
         self._rg_url = (
@@ -133,6 +135,7 @@ class DeploymentValidator:
             tenant_id=self._tenant_id,
             client_id=self._client_id,
             client_secret=self._client_secret,
+            device_code_callback=self._device_code_callback,
         )
         url = f"{self._rg_url}?api-version=2024-03-01"
         headers = {
@@ -215,6 +218,7 @@ class DeploymentValidator:
             tenant_id=self._tenant_id,
             client_id=self._client_id,
             client_secret=self._client_secret,
+            device_code_callback=self._device_code_callback,
         )
 
         total = len(sku_region_pairs)

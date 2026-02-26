@@ -31,13 +31,16 @@ The app opens at `http://localhost:8501`.
 
 ## Authentication
 
-The tool needs read access to the Azure Resource SKUs API. Three auth methods are supported:
+The tool needs read access to the Azure Resource SKUs API. Four auth methods are supported:
 
 | Method | When to use |
 |---|---|
-| **Azure CLI** (`az login`) | Local development — uses your existing login |
-| **Browser (Interactive)** | When Azure CLI isn't installed |
+| **Default (CLI / Managed Identity / Env Vars)** | Local development or pre-configured runtime identities |
+| **Device Code (Browser Login)** | Recommended for hosted deployments (including Streamlit Cloud) |
+| **Browser (Interactive)** | Local development only (requires the app host to open a browser window) |
 | **Service Principal** | CI/CD or shared environments — provide tenant, client ID, and secret |
+
+If you're running this in a hosted environment, `Default` often fails unless credentials are preconfigured, and `Interactive Browser` typically fails because the server cannot open a local browser. Use `Device Code` or `Service Principal`.
 
 The live capacity check also requires **Contributor** access to a resource group (it creates and validates ARM deployments without actually provisioning VMs).
 

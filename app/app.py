@@ -14,6 +14,7 @@ import logging
 import os
 import sys
 from collections import defaultdict
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -558,6 +559,61 @@ def _short_reason(result) -> str:
     if result.capacity_error_code:
         return f"Capacity: {result.capacity_error_code}"
     return ""
+
+
+def _format_device_code_expiry(expires_on: int | None) -> str:
+    """Format device code expiry timestamp for display."""
+    if not expires_on:
+        return ""
+    try:
+        expires_utc = datetime.fromtimestamp(int(expires_on), tz=timezone.utc)
+        return expires_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
+    except (ValueError, TypeError, OSError):
+        return ""
+
+
+def _render_device_code_prompt(
+    container,
+    verification_uri: str,
+    user_code: str,
+    expires_on: int | None,
+) -> None:
+    """Render in-app instructions for Azure device code login."""
+    expiry_text = _format_device_code_expiry(expires_on)
+    lines = [
+        "Azure device login required.",
+        "",
+        f"1. Open `{verification_uri}`",
+        f"2. Enter code: `{user_code}`",
+        "3. Complete sign-in in that browser tab and return here.",
+    ]
+    if expiry_text:
+        lines.append(f"Code expires at: `{expiry_text}`")
+
+    container.info("\n".join(lines))
+    logger.info(
+        "Device code prompt shown in UI (url=%s, code=%s, expires_on=%s)",
+        verification_uri,
+        user_code,
+        expires_on,
+    )
+
+
+def _friendly_auth_error(auth_method: AuthMethod, exc: AzureAuthError) -> str:
+    """Convert noisy Azure SDK auth errors into user-actionable guidance."""
+    msg = str(exc)
+    if auth_method == AuthMethod.INTERACTIVE_BROWSER and "Failed to open a browser" in msg:
+        return (
+            "Interactive Browser auth is not supported in hosted Streamlit environments. "
+            "Use Device Code (Browser Login) or Service Principal."
+        )
+    if auth_method == AuthMethod.DEFAULT and "DefaultAzureCredential failed to retrieve a token" in msg:
+        return (
+            "Default auth could not find usable credentials in this environment "
+            "(no Azure CLI/managed identity/env credentials). Use Device Code "
+            "(Browser Login) or Service Principal."
+        )
+    return f"Auth failed: {msg}"
 
 
 def _short_verdict(result) -> str:
@@ -1738,6 +1794,8 @@ def main() -> None:
         unsafe_allow_html=True,
     )
 
+    device_code_callback = None
+
     # --- Sidebar: Azure Login ---
     with st.sidebar:
         st.markdown(
@@ -1760,8 +1818,10 @@ def main() -> None:
                 "**Default** — uses Azure CLI (`az login`), managed identity, "
                 "or env vars automatically.\n\n"
                 "**Service Principal** — enter client credentials directly.\n\n"
-                "**Device Code** — log in via browser with a one-time code.\n\n"
-                "**Interactive Browser** — opens a browser window to log in."
+                "**Device Code** — log in via browser with a one-time code "
+                "(recommended for hosted deployments).\n\n"
+                "**Interactive Browser** — opens a browser window on the app host "
+                "(local development only)."
             ),
         )
         auth_method = AuthMethod(auth_method_label)
@@ -1801,6 +1861,31 @@ def main() -> None:
                 help="Azure AD tenant ID. Leave blank for multi-tenant.",
             )
 
+        device_code_prompt = st.empty()
+        if auth_method == AuthMethod.DEVICE_CODE:
+            st.caption(
+                "Recommended for hosted deployments. You will get a login URL "
+                "and one-time code after clicking Test Connection."
+            )
+            def _device_code_callback(
+                verification_uri: str,
+                user_code: str,
+                expires_on: int,
+            ) -> None:
+                _render_device_code_prompt(
+                    device_code_prompt,
+                    verification_uri=verification_uri,
+                    user_code=user_code,
+                    expires_on=expires_on,
+                )
+
+            device_code_callback = _device_code_callback
+        elif auth_method == AuthMethod.INTERACTIVE_BROWSER:
+            st.warning(
+                "Interactive Browser auth requires opening a browser on the app host "
+                "and usually fails in hosted Streamlit. Use Device Code instead."
+            )
+
         # Test connection button
         col_test, col_clear = st.columns(2)
         with col_test:
@@ -1816,18 +1901,21 @@ def main() -> None:
                                 tenant_id=tenant_id,
                                 client_id=client_id,
                                 client_secret=client_secret,
+                                device_code_callback=device_code_callback,
                             )
                         st.session_state["auth_verified"] = True
                         st.session_state["auth_method"] = auth_method
+                        device_code_prompt.empty()
                         st.success("Connected!")
                     except AzureAuthError as exc:
                         st.session_state["auth_verified"] = False
-                        st.error(f"Auth failed: {exc}")
+                        st.error(_friendly_auth_error(auth_method, exc))
         with col_clear:
             if st.button("Reset Auth", width="stretch"):
                 reset_credential()
                 st.session_state.pop("auth_verified", None)
                 st.session_state.pop("auth_method", None)
+                device_code_prompt.empty()
                 st.info("Credentials cleared.")
 
         # Show auth status
@@ -1978,6 +2066,7 @@ def main() -> None:
                     tenant_id=tenant_id,
                     client_id=client_id,
                     client_secret=client_secret,
+                    device_code_callback=device_code_callback,
                 )
 
             with st.spinner("Fetching Azure VM SKU catalog (this may take a moment on first run)..."):
@@ -2034,6 +2123,7 @@ def main() -> None:
                         tenant_id=tenant_id,
                         client_id=client_id,
                         client_secret=client_secret,
+                        device_code_callback=device_code_callback,
                     )
 
                     # Auto-create the resource group if it doesn't exist
@@ -2163,7 +2253,7 @@ def main() -> None:
                 st.session_state["disk_results"] = disk_results
 
         except AzureAuthError as exc:
-            st.error(f"Azure authentication failed: {exc}")
+            st.error(_friendly_auth_error(auth_method, exc))
             return
         except SkuServiceError as exc:
             st.error(f"Azure SKU service error: {exc}")
