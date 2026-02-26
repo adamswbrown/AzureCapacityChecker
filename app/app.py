@@ -9,6 +9,7 @@ Run with:
 
 from __future__ import annotations
 
+import inspect
 import io
 import logging
 import os
@@ -602,6 +603,11 @@ def _render_device_code_prompt(
 def _friendly_auth_error(auth_method: AuthMethod, exc: AzureAuthError) -> str:
     """Convert noisy Azure SDK auth errors into user-actionable guidance."""
     msg = str(exc)
+    if "unexpected keyword argument 'device_code_callback'" in msg:
+        return (
+            "Authentication component versions are out of sync in this deployment. "
+            "Redeploy with the latest code so app and auth modules match."
+        )
     if auth_method == AuthMethod.INTERACTIVE_BROWSER and "Failed to open a browser" in msg:
         return (
             "Interactive Browser auth is not supported in hosted Streamlit environments. "
@@ -632,6 +638,14 @@ def _prefer_device_code_default() -> bool:
     # Streamlit Community Cloud commonly sets this flag. Keep heuristic narrow
     # to avoid changing behavior for local development.
     return bool(os.environ.get("STREAMLIT_SHARING_MODE"))
+
+
+def _supports_kwarg(target, kwarg: str) -> bool:
+    """Return True if a callable signature accepts a specific keyword arg."""
+    try:
+        return kwarg in inspect.signature(target).parameters
+    except (TypeError, ValueError):
+        return False
 
 
 def _short_verdict(result) -> str:
@@ -1921,14 +1935,16 @@ def main() -> None:
                 else:
                     try:
                         with st.spinner("Authenticating..."):
-                            test_connection(
+                            test_kwargs = dict(
                                 subscription_id=subscription_id,
                                 method=auth_method,
                                 tenant_id=tenant_id,
                                 client_id=client_id,
                                 client_secret=client_secret,
-                                device_code_callback=device_code_callback,
                             )
+                            if _supports_kwarg(test_connection, "device_code_callback"):
+                                test_kwargs["device_code_callback"] = device_code_callback
+                            test_connection(**test_kwargs)
                         st.session_state["auth_verified"] = True
                         st.session_state["auth_method"] = auth_method
                         device_code_prompt.empty()
@@ -2086,14 +2102,16 @@ def main() -> None:
     if st.button("Run Analysis", type="primary", width="stretch"):
         try:
             with st.spinner("Authenticating with Azure..."):
-                sku_service = SkuService(
+                sku_kwargs = dict(
                     subscription_id=subscription_id,
                     auth_method=auth_method,
                     tenant_id=tenant_id,
                     client_id=client_id,
                     client_secret=client_secret,
-                    device_code_callback=device_code_callback,
                 )
+                if _supports_kwarg(SkuService.__init__, "device_code_callback"):
+                    sku_kwargs["device_code_callback"] = device_code_callback
+                sku_service = SkuService(**sku_kwargs)
 
             with st.spinner("Fetching Azure VM SKU catalog (this may take a moment on first run)..."):
                 sku_service.fetch_skus()
@@ -2142,15 +2160,17 @@ def main() -> None:
                             f"unique alternatives..."
                         )
 
-                    deployment_validator = DeploymentValidator(
+                    deployment_kwargs = dict(
                         subscription_id=subscription_id,
                         resource_group=resource_group,
                         auth_method=auth_method,
                         tenant_id=tenant_id,
                         client_id=client_id,
                         client_secret=client_secret,
-                        device_code_callback=device_code_callback,
                     )
+                    if _supports_kwarg(DeploymentValidator.__init__, "device_code_callback"):
+                        deployment_kwargs["device_code_callback"] = device_code_callback
+                    deployment_validator = DeploymentValidator(**deployment_kwargs)
 
                     # Auto-create the resource group if it doesn't exist
                     rg_location = next(iter(
