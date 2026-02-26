@@ -42,6 +42,8 @@ The tool needs read access to the Azure Resource SKUs API. Four auth methods are
 
 If you're running this in a hosted environment, `Default` often fails unless credentials are preconfigured, and `Interactive Browser` typically fails because the server cannot open a local browser. Use `Device Code` or `Service Principal`.
 
+In hosted Streamlit deployments, the auth dropdown defaults to **Device Code** automatically. You can override this with `AZURE_AUTH_DEFAULT=device_code` or `AZURE_AUTH_DEFAULT=default`.
+
 The live capacity check also requires **Contributor** access to a resource group (it creates and validates ARM deployments without actually provisioning VMs).
 
 ### Required Azure permissions

@@ -616,6 +616,24 @@ def _friendly_auth_error(auth_method: AuthMethod, exc: AzureAuthError) -> str:
     return f"Auth failed: {msg}"
 
 
+def _prefer_device_code_default() -> bool:
+    """Return True when auth dropdown should default to Device Code.
+
+    Override via env var:
+    - `AZURE_AUTH_DEFAULT=device_code` to force Device Code
+    - `AZURE_AUTH_DEFAULT=default` to force Default chain
+    """
+    override = os.environ.get("AZURE_AUTH_DEFAULT", "").strip().lower()
+    if override in {"device_code", "device", "dc"}:
+        return True
+    if override in {"default", "cli"}:
+        return False
+
+    # Streamlit Community Cloud commonly sets this flag. Keep heuristic narrow
+    # to avoid changing behavior for local development.
+    return bool(os.environ.get("STREAMLIT_SHARING_MODE"))
+
+
 def _short_verdict(result) -> str:
     """One-line verdict for expander labels."""
     if result.status == SkuStatus.OK and result.capacity_verified is True:
@@ -1810,10 +1828,15 @@ def main() -> None:
 
         st.header("Azure Login")
 
+        auth_options = [m.value for m in AuthMethod]
+        default_auth = (
+            AuthMethod.DEVICE_CODE if _prefer_device_code_default() else AuthMethod.DEFAULT
+        )
+
         auth_method_label = st.selectbox(
             "Authentication method",
-            options=[m.value for m in AuthMethod],
-            index=0,
+            options=auth_options,
+            index=auth_options.index(default_auth.value),
             help=(
                 "**Default** — uses Azure CLI (`az login`), managed identity, "
                 "or env vars automatically.\n\n"
@@ -1825,6 +1848,9 @@ def main() -> None:
             ),
         )
         auth_method = AuthMethod(auth_method_label)
+
+        if default_auth == AuthMethod.DEVICE_CODE:
+            st.caption("Hosted runtime detected. Defaulting auth to Device Code.")
 
         subscription_id = st.text_input(
             "Subscription ID",
