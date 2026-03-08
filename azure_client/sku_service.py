@@ -7,6 +7,7 @@ VM sizes across regions, including restriction and capability metadata.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -30,6 +31,11 @@ from app.config import (
 )
 
 logger = logging.getLogger(__name__)
+
+_TENANT_ID_PATTERN = re.compile(
+    r"(?:sts\.windows\.net|login\.windows\.net)/([0-9a-fA-F-]{36})",
+    re.IGNORECASE,
+)
 
 
 class SkuServiceError(Exception):
@@ -317,6 +323,15 @@ class SkuService:
             f"/providers/Microsoft.Compute/skus"
         )
 
+    def _extract_tenant_id_from_auth_error(self, error_text: str) -> Optional[str]:
+        """Extract tenant ID from Azure InvalidAuthenticationTokenTenant responses."""
+        if not error_text:
+            return None
+        match = _TENANT_ID_PATTERN.search(error_text)
+        if not match:
+            return None
+        return match.group(1)
+
     @retry(
         stop=stop_after_attempt(AZURE_MAX_RETRIES),
         wait=wait_exponential(
@@ -372,28 +387,62 @@ class SkuService:
         )
         url = f"{self._base_url}?api-version={AZURE_COMPUTE_SKU_API_VERSION}&$filter=resourceType eq 'virtualMachines'"
 
+        retried_with_tenant = False
         all_skus: list[SkuInfo] = []
         page_count = 0
 
-        try:
-            while url:
-                page_count += 1
-                logger.info("Fetching SKU page %d ...", page_count)
-                data = self._fetch_page(url, token)
+        while True:
+            all_skus = []
+            page_count = 0
+            next_url = url
 
-                for raw_sku in data.get("value", []):
-                    parsed = _parse_sku(raw_sku)
-                    if parsed:
-                        all_skus.append(parsed)
+            try:
+                while next_url:
+                    page_count += 1
+                    logger.info("Fetching SKU page %d ...", page_count)
+                    data = self._fetch_page(next_url, token)
 
-                url = data.get("nextLink")
+                    for raw_sku in data.get("value", []):
+                        parsed = _parse_sku(raw_sku)
+                        if parsed:
+                            all_skus.append(parsed)
 
-        except requests.HTTPError as exc:
-            raise SkuServiceError(
-                f"Azure API returned HTTP {exc.response.status_code}: {exc.response.text}"
-            ) from exc
-        except requests.RequestException as exc:
-            raise SkuServiceError(f"Network error fetching SKUs: {exc}") from exc
+                    next_url = data.get("nextLink")
+                break
+
+            except requests.HTTPError as exc:
+                response = exc.response
+                response_text = response.text if response is not None else ""
+                status_code = response.status_code if response is not None else None
+
+                if (
+                    status_code == 401
+                    and not retried_with_tenant
+                    and "InvalidAuthenticationTokenTenant" in response_text
+                ):
+                    suggested_tenant = self._extract_tenant_id_from_auth_error(response_text)
+                    if suggested_tenant and suggested_tenant != self._tenant_id:
+                        logger.warning(
+                            "Token issuer tenant mismatch detected; retrying SKU fetch with tenant_id=%s",
+                            suggested_tenant,
+                        )
+                        self._tenant_id = suggested_tenant
+                        token = get_access_token(
+                            method=self._auth_method,
+                            tenant_id=self._tenant_id,
+                            client_id=self._client_id,
+                            client_secret=self._client_secret,
+                            device_code_callback=self._device_code_callback,
+                            force_refresh=True,
+                        )
+                        retried_with_tenant = True
+                        continue
+
+                raise SkuServiceError(
+                    f"Azure API returned HTTP {status_code}: {response_text}"
+                ) from exc
+            except requests.RequestException as exc:
+                raise SkuServiceError(f"Network error fetching SKUs: {exc}") from exc
 
         self._cache.store(all_skus)
         logger.info("Fetched %d VM SKUs in %d pages", len(all_skus), page_count)
@@ -453,28 +502,62 @@ class SkuService:
             f"&$filter=resourceType eq 'disks'"
         )
 
+        retried_with_tenant = False
         all_disk_skus: list[SkuInfo] = []
         page_count = 0
 
-        try:
-            while url:
-                page_count += 1
-                logger.info("Fetching disk SKU page %d ...", page_count)
-                data = self._fetch_page(url, token)
+        while True:
+            all_disk_skus = []
+            page_count = 0
+            next_url = url
 
-                for raw_sku in data.get("value", []):
-                    parsed = _parse_disk_sku(raw_sku)
-                    if parsed:
-                        all_disk_skus.append(parsed)
+            try:
+                while next_url:
+                    page_count += 1
+                    logger.info("Fetching disk SKU page %d ...", page_count)
+                    data = self._fetch_page(next_url, token)
 
-                url = data.get("nextLink")
+                    for raw_sku in data.get("value", []):
+                        parsed = _parse_disk_sku(raw_sku)
+                        if parsed:
+                            all_disk_skus.append(parsed)
 
-        except requests.HTTPError as exc:
-            raise SkuServiceError(
-                f"Azure API returned HTTP {exc.response.status_code}: {exc.response.text}"
-            ) from exc
-        except requests.RequestException as exc:
-            raise SkuServiceError(f"Network error fetching disk SKUs: {exc}") from exc
+                    next_url = data.get("nextLink")
+                break
+
+            except requests.HTTPError as exc:
+                response = exc.response
+                response_text = response.text if response is not None else ""
+                status_code = response.status_code if response is not None else None
+
+                if (
+                    status_code == 401
+                    and not retried_with_tenant
+                    and "InvalidAuthenticationTokenTenant" in response_text
+                ):
+                    suggested_tenant = self._extract_tenant_id_from_auth_error(response_text)
+                    if suggested_tenant and suggested_tenant != self._tenant_id:
+                        logger.warning(
+                            "Token issuer tenant mismatch detected; retrying disk SKU fetch with tenant_id=%s",
+                            suggested_tenant,
+                        )
+                        self._tenant_id = suggested_tenant
+                        token = get_access_token(
+                            method=self._auth_method,
+                            tenant_id=self._tenant_id,
+                            client_id=self._client_id,
+                            client_secret=self._client_secret,
+                            device_code_callback=self._device_code_callback,
+                            force_refresh=True,
+                        )
+                        retried_with_tenant = True
+                        continue
+
+                raise SkuServiceError(
+                    f"Azure API returned HTTP {status_code}: {response_text}"
+                ) from exc
+            except requests.RequestException as exc:
+                raise SkuServiceError(f"Network error fetching disk SKUs: {exc}") from exc
 
         self._disk_cache.store(all_disk_skus)
         logger.info("Fetched %d disk SKU entries in %d pages", len(all_disk_skus), page_count)

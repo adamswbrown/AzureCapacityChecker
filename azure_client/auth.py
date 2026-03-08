@@ -49,15 +49,30 @@ CredentialType = Union[
 DeviceCodePromptCallback = Callable[[str, str, int], None]
 
 _credential: Optional[CredentialType] = None
-_current_method: Optional[AuthMethod] = None
+_current_cache_key: Optional[tuple[str, str, str, str]] = None
 
 
 def reset_credential() -> None:
     """Clear the cached credential so a new one can be created."""
-    global _credential, _current_method
+    global _credential, _current_cache_key
     _credential = None
-    _current_method = None
+    _current_cache_key = None
     logger.info("Azure credential cache cleared")
+
+
+def _credential_cache_key(
+    method: AuthMethod,
+    tenant_id: str,
+    client_id: str,
+    client_secret: str,
+) -> tuple[str, str, str, str]:
+    """Build a cache key that reflects auth parameters affecting token issuer."""
+    return (
+        method.value,
+        (tenant_id or "").strip(),
+        (client_id or "").strip(),
+        client_secret or "",
+    )
 
 
 def get_credential(
@@ -66,6 +81,7 @@ def get_credential(
     client_id: str = "",
     client_secret: str = "",
     device_code_callback: Optional[DeviceCodePromptCallback] = None,
+    force_refresh: bool = False,
 ) -> CredentialType:
     """Create or return a cached credential for the given auth method.
 
@@ -82,10 +98,17 @@ def get_credential(
     Raises:
         AzureAuthError: If the credential cannot be created.
     """
-    global _credential, _current_method
+    global _credential, _current_cache_key
 
-    # Return cached credential if same method
-    if _credential is not None and _current_method == method:
+    cache_key = _credential_cache_key(
+        method=method,
+        tenant_id=tenant_id,
+        client_id=client_id,
+        client_secret=client_secret,
+    )
+
+    # Return cached credential only when all auth-shaping params match.
+    if not force_refresh and _credential is not None and _current_cache_key == cache_key:
         return _credential
 
     try:
@@ -121,7 +144,7 @@ def get_credential(
             _credential = DefaultAzureCredential()
             logger.info("Authenticated via DefaultAzureCredential")
 
-        _current_method = method
+        _current_cache_key = cache_key
         return _credential
 
     except AzureAuthError:
@@ -137,6 +160,7 @@ def get_access_token(
     client_secret: str = "",
     scope: str = "https://management.azure.com/.default",
     device_code_callback: Optional[DeviceCodePromptCallback] = None,
+    force_refresh: bool = False,
 ) -> str:
     """Obtain a bearer token for the Azure Resource Manager API.
 
@@ -160,6 +184,7 @@ def get_access_token(
         client_id=client_id,
         client_secret=client_secret,
         device_code_callback=device_code_callback,
+        force_refresh=force_refresh,
     )
     try:
         token = credential.get_token(scope)

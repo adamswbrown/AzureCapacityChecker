@@ -10,12 +10,13 @@ This is the "Method 2" check (equivalent to New-AzVM -WhatIf).
 from __future__ import annotations
 
 import logging
+import re
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from threading import Lock
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 import requests
 from tenacity import (
@@ -40,6 +41,11 @@ from app.config import (
 )
 
 logger = logging.getLogger(__name__)
+
+_TENANT_ID_PATTERN = re.compile(
+    r"(?:sts\.windows\.net|login\.windows\.net)/([0-9a-fA-F-]{36})",
+    re.IGNORECASE,
+)
 
 
 class DeploymentValidationError(Exception):
@@ -107,6 +113,7 @@ class DeploymentValidator:
         self._client_secret = client_secret
         self._device_code_callback = device_code_callback
         self._max_workers = max_workers
+        self._auth_lock = Lock()
         self._rate_limiter = _RateLimiter(ARM_VALIDATION_RATE_LIMIT_PER_MINUTE)
         self._rg_url = (
             f"https://management.azure.com/subscriptions/{subscription_id}"
@@ -115,6 +122,76 @@ class DeploymentValidator:
         self._base_url = (
             f"{self._rg_url}/providers/Microsoft.Resources/deployments"
         )
+
+    def _get_access_token(self, force_refresh: bool = False) -> str:
+        """Get an ARM access token for current auth settings."""
+        return get_access_token(
+            method=self._auth_method,
+            tenant_id=self._tenant_id,
+            client_id=self._client_id,
+            client_secret=self._client_secret,
+            device_code_callback=self._device_code_callback,
+            force_refresh=force_refresh,
+        )
+
+    @staticmethod
+    def _extract_tenant_id_from_auth_error(error_text: str) -> Optional[str]:
+        """Extract tenant ID from Azure InvalidAuthenticationTokenTenant responses."""
+        if not error_text:
+            return None
+        match = _TENANT_ID_PATTERN.search(error_text)
+        if not match:
+            return None
+        return match.group(1)
+
+    def _send_with_tenant_retry(
+        self,
+        method: str,
+        url: str,
+        token: str,
+        timeout: int,
+        **kwargs: Any,
+    ) -> tuple[requests.Response, str]:
+        """Send ARM request and retry once on tenant issuer mismatch (401)."""
+        headers = dict(kwargs.pop("headers", {}))
+        headers.setdefault("Content-Type", "application/json")
+        headers["Authorization"] = f"Bearer {token}"
+
+        response = requests.request(
+            method,
+            url,
+            headers=headers,
+            timeout=timeout,
+            **kwargs,
+        )
+
+        if (
+            response.status_code == 401
+            and "InvalidAuthenticationTokenTenant" in response.text
+        ):
+            suggested_tenant = self._extract_tenant_id_from_auth_error(response.text)
+            if suggested_tenant:
+                with self._auth_lock:
+                    if suggested_tenant != self._tenant_id:
+                        logger.warning(
+                            "Token issuer tenant mismatch detected; retrying ARM request with tenant_id=%s",
+                            suggested_tenant,
+                        )
+                        self._tenant_id = suggested_tenant
+                    refreshed_token = self._get_access_token(force_refresh=True)
+
+                retry_headers = dict(headers)
+                retry_headers["Authorization"] = f"Bearer {refreshed_token}"
+                response = requests.request(
+                    method,
+                    url,
+                    headers=retry_headers,
+                    timeout=timeout,
+                    **kwargs,
+                )
+                return response, refreshed_token
+
+        return response, token
 
     def ensure_resource_group(self, location: str = "uksouth") -> None:
         """Create the resource group if it does not already exist.
@@ -130,22 +207,17 @@ class DeploymentValidator:
         Raises:
             DeploymentValidationError: If creation fails.
         """
-        token = get_access_token(
-            method=self._auth_method,
-            tenant_id=self._tenant_id,
-            client_id=self._client_id,
-            client_secret=self._client_secret,
-            device_code_callback=self._device_code_callback,
-        )
+        token = self._get_access_token()
         url = f"{self._rg_url}?api-version=2024-03-01"
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-        }
 
         # Check if it already exists
         try:
-            check = requests.get(url, headers=headers, timeout=15)
+            check, token = self._send_with_tenant_retry(
+                "GET",
+                url,
+                token,
+                timeout=15,
+            )
         except requests.RequestException as exc:
             raise DeploymentValidationError(
                 f"Network error checking resource group: {exc}"
@@ -162,8 +234,12 @@ class DeploymentValidator:
 
         # Does not exist — create it
         try:
-            resp = requests.put(
-                url, json={"location": location}, headers=headers, timeout=30
+            resp, token = self._send_with_tenant_retry(
+                "PUT",
+                url,
+                token,
+                timeout=30,
+                json={"location": location},
             )
         except requests.RequestException as exc:
             raise DeploymentValidationError(
@@ -213,13 +289,7 @@ class DeploymentValidator:
         if not sku_region_pairs:
             return {}
 
-        token = get_access_token(
-            method=self._auth_method,
-            tenant_id=self._tenant_id,
-            client_id=self._client_id,
-            client_secret=self._client_secret,
-            device_code_callback=self._device_code_callback,
-        )
+        token = self._get_access_token()
 
         total = len(sku_region_pairs)
         results: dict[tuple[str, str], ValidationResult] = {}
@@ -319,16 +389,12 @@ class DeploymentValidator:
         )
 
         payload = self._build_template(sku_name, region)
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-        }
-
-        response = requests.post(
+        response, token = self._send_with_tenant_retry(
+            "POST",
             url,
-            json=payload,
-            headers=headers,
+            token,
             timeout=ARM_VALIDATION_REQUEST_TIMEOUT_SECONDS,
+            json=payload,
         )
 
         # Handle 429 rate limiting
@@ -360,17 +426,14 @@ class DeploymentValidator:
         self, location_url: str, token: str, sku_name: str, region: str
     ) -> ValidationResult:
         """Poll an async deployment validation until completion."""
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-        }
         deadline = time.time() + ARM_VALIDATION_POLL_TIMEOUT_SECONDS
 
         while time.time() < deadline:
             time.sleep(ARM_VALIDATION_POLL_INTERVAL_SECONDS)
-            resp = requests.get(
+            resp, token = self._send_with_tenant_retry(
+                "GET",
                 location_url,
-                headers=headers,
+                token,
                 timeout=ARM_VALIDATION_REQUEST_TIMEOUT_SECONDS,
             )
             if resp.status_code == 202:
